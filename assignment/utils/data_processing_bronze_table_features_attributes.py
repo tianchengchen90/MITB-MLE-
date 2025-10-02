@@ -27,7 +27,7 @@ def process_bronze_table_fa(snapshot_date_str, bronze_attributes_directory, spar
     print(snapshot_date_str + 'row count:', df.count())
 
     # save bronze table to datamart - IRL connect to database to write
-    partition_name = "bronze_attributes" + snapshot_date_str.replace('-','_') + '.csv'
+    partition_name = "bronze_attributes_" + snapshot_date_str.replace('-','_') + '.csv'
     filepath = bronze_attributes_directory + partition_name
     df.toPandas().to_csv(filepath, index=False)
     print('saved to:', filepath)
