@@ -14,7 +14,7 @@ from pyspark.sql.functions import col, lit, when, split, explode, regexp_extract
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 
 
-def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_daily_directory, spark):
+def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_financials_directory, spark):
     """
     Reads the bronze loan data CSV, cleans the data using PySpark native operations,
     performs outlier detection and imputation on numerical features, 
@@ -25,8 +25,8 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_da
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date()
     
     # connect to bronze table
-    partition_name = "bronze_loan_daily_" + snapshot_date_str.replace('-','_') + '.csv'
-    filepath = bronze_lms_directory + partition_name
+    partition_name = "bronze_features_financials_" + snapshot_date_str.replace('-','_') + '.csv'
+    filepath = bronze_financials_directory + partition_name
     df = spark.read.csv(filepath, header=True, inferSchema=True)
     print('loaded from:', filepath, 'row count:', df.count())
 
@@ -152,7 +152,8 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_da
     # Split the comma-separated string into an array
     df_split = df.withColumn(
         "loan_array",
-        F.split(F.col("type_of_loan"), ",\s*")
+        # FIX: Use raw string r",\s*" to avoid SyntaxWarning
+        F.split(F.col("type_of_loan"), r",\s*")
     )
 
     # Explode the array so each loan type gets its own row
@@ -285,8 +286,8 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_da
             df = df.withColumn(column, col(column).cast(new_type))
 
     # save silver table - IRL connect to database to write
-    partition_name = "silver_loan_daily_" + snapshot_date_str.replace('-','_') + '.parquet'
-    filepath = silver_loan_daily_directory + partition_name
+    partition_name = "silver_features_financials_" + snapshot_date_str.replace('-','_') + '.parquet'
+    filepath = silver_financials_directory + partition_name
     
     df.write.mode("overwrite").parquet(filepath)
     
