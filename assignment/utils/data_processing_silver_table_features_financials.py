@@ -221,6 +221,12 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         )
     )
     
+    # Step 8 (Cont.): Calculate the total credit history age in months
+    df = df.withColumn(
+        "credit_history_months_total",
+        (F.col("credit_history_years") * F.lit(12) + F.col("credit_history_months")).cast(IntegerType())
+    )
+    
     # 9. Encode spending levels
     df = df.withColumn(
         "spending_level_encoded",
@@ -270,6 +276,8 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         "credit_mix_encoded": IntegerType(),
         "credit_history_years": IntegerType(),
         "credit_history_months": IntegerType(),
+        # New column for total credit history in months
+        "credit_history_months_total": IntegerType(), 
         "spending_level_encoded": IntegerType(),
         "transaction_value_encoded": IntegerType(),
         "loan_type_count_sum": IntegerType(), # New validation column
