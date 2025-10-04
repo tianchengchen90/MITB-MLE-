@@ -5,22 +5,60 @@ import argparse
 from datetime import datetime
 
 # Explicitly import PySpark functions used
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, when
 from pyspark.sql import SparkSession
+
+def analyze_null_counts(df, df_name):
+    """
+    Calculates and prints the count and percentage of nulls for columns containing nulls.
+    
+    Args:
+        df (DataFrame): The PySpark DataFrame to analyze.
+        df_name (str): A descriptive name for the DataFrame (e.g., 'df_aggregated').
+    """
+    total_rows = df.count()
+    if total_rows == 0:
+        print(f"\n--- Null Analysis for {df_name} ---")
+        print("DataFrame is empty. Cannot perform null analysis.")
+        print("-----------------------------------")
+        return
+        
+    # Calculate null counts for all columns
+    # We use F.sum(F.when(F.col(c).isNull(), 1).otherwise(0)) to count nulls efficiently
+    null_counts = [
+        F.sum(F.when(col(c).isNull(), 1).otherwise(0)).alias(c) 
+        for c in df.columns
+    ]
+    
+    # Execute the aggregation
+    # We collect the result, which is a single row with null counts per column
+    try:
+        null_row = df.agg(*null_counts).collect()[0]
+    except Exception as e:
+        print(f"Error calculating null counts for {df_name}: {e}")
+        return
+    
+    print(f"\n--- Null Analysis for {df_name} (Total Rows: {total_rows}) ---")
+    has_nulls = False
+    
+    # Iterate through the results and print only columns with nulls
+    for col_name, null_count in null_row.asDict().items():
+        if null_count > 0:
+            null_percentage = (null_count / total_rows) * 100
+            # Print with f-string formatting for alignment
+            print(f"| Column: {col_name:30} | Null Count: {null_count:10} | Null %: {null_percentage:6.2f}% |")
+            has_nulls = True
+            
+    if not has_nulls:
+        print("✅ Success: No columns contain null values.")
+    print("------------------------------------------------------------------\n")
+
 
 def process_silver_aggregation(snapshot_date_str, silver_clickstream_directory, silver_attributes_directory, silver_financials_directory, silver_aggregated_directory, spark):
     """
     Reads the silver layer tables for clickstream, attributes, and financials,
     performs an inner join on 'customer_id' and 'snapshot_date' to create a unified feature set,
     and writes the result to a new aggregated silver Parquet table.
-    
-    Args:
-        snapshot_date_str (str): The snapshot date in 'YYYY-MM-DD' format.
-        silver_clickstream_directory (str): Path to the silver clickstream data directory.
-        silver_attributes_directory (str): Path to the silver attributes data directory.
-        silver_financials_directory (str): Path to the silver financials data directory.
-        silver_aggregated_directory (str): Path to save the final aggregated silver table.
-        spark (SparkSession): The active Spark session.
     """
     # --- 1. CONSTRUCT FILE PATHS FOR INPUT SILVER TABLES ---
     
@@ -59,7 +97,6 @@ def process_silver_aggregation(snapshot_date_str, silver_clickstream_directory, 
     join_keys = ["customer_id", "snapshot_date"]
     
     # Join attributes with financials first
-    # The 'on' parameter handles the join condition and avoids duplicating the key columns.
     df_agg_1 = df_attributes.join(df_financials, on=join_keys, how='inner')
     print(f"Row count after joining attributes and financials: {df_agg_1.count()}")
     
@@ -72,8 +109,10 @@ def process_silver_aggregation(snapshot_date_str, silver_clickstream_directory, 
     df_aggregated.printSchema()
     print(f"Total number of columns in aggregated table: {len(df_aggregated.columns)}")
 
-
-    # --- 4. SAVE THE AGGREGATED SILVER TABLE ---
+    # --- 4. DATA QUALITY CHECK: ANALYZE NULLS ---
+    analyze_null_counts(df_aggregated, "df_aggregated_final")
+    
+    # --- 5. SAVE THE AGGREGATED SILVER TABLE ---
     
     final_partition_name = "silver_features_aggregated_" + partition_suffix
     final_filepath = os.path.join(silver_aggregated_directory, final_partition_name)
