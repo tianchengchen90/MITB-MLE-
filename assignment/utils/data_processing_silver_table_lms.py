@@ -25,11 +25,17 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_da
     df = spark.read.csv(filepath, header=True, inferSchema=True)
     print('loaded from:', filepath, 'row count:', df.count())
 
+    # RENAME COLUMNS TO SNAKE_CASE
+    # The only column with a non-snake_case format is 'Customer_ID'
+    df = df.withColumnRenamed("Customer_ID", "customer_id")
+    print(f"Columns renamed. Current columns: {df.columns}")
+    
     # clean data: enforce schema / data type
     # Dictionary specifying columns and their desired datatypes
+    # Keys updated to snake_case where necessary (e.g., 'customer_id')
     column_type_map = {
         "loan_id": StringType(),
-        "Customer_ID": StringType(),
+        "customer_id": StringType(), 
         "loan_start_date": DateType(),
         "tenure": IntegerType(),
         "installment_num": IntegerType(),
@@ -57,7 +63,7 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_loan_da
     filepath = silver_loan_daily_directory + partition_name
     df.write.mode("overwrite").parquet(filepath)
     # df.toPandas().to_parquet(filepath,
-    #           compression='gzip')
+    #           compression='gzip')
     print('saved to:', filepath)
     
     return df
