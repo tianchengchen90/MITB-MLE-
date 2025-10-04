@@ -98,55 +98,99 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     
     # 4. Numerical Feature Validation, Outlier Clipping, and Median Imputation
     
-    numerical_cols = [
-        "annual_income", "monthly_inhand_salary", "num_bank_accounts", 
-        "num_credit_card", "interest_rate", "num_of_loan", "delay_from_due_date", 
-        "num_of_delayed_payment", "changed_credit_limit", "num_credit_inquiries", 
-        "outstanding_debt", "credit_utilization_ratio", "total_emi_per_month", 
+    # Define columns for percentile-based clipping
+    cols_for_percentile_clip = [
+        "annual_income", "monthly_inhand_salary", 
+        "changed_credit_limit", "outstanding_debt", 
+        "credit_utilization_ratio", "total_emi_per_month", 
         "amount_invested_monthly", "monthly_balance"
     ]
-    
-    # Calculate median (50th percentile) and high threshold (99.9th percentile)
-    stats_exprs = [F.percentile_approx(F.col(c).cast(FloatType()), F.array(F.lit(0.5))).alias(f"{c}_median") for c in numerical_cols]
-    stats_exprs += [F.percentile_approx(F.col(c).cast(FloatType()), F.array(F.lit(0.999))).alias(f"{c}_p999") for c in numerical_cols]
 
-    # Collect statistics (action)
+    # Define columns with specific, hard-coded clipping thresholds
+    custom_clip_thresholds = {
+        'interest_rate': 40,
+        'num_bank_accounts': 15,
+        'num_credit_card': 20,
+        'num_credit_inquiries': 30,
+        'num_of_delayed_payment': 30,
+        'delay_from_due_date': 100
+    }
+    cols_for_custom_clip = list(custom_clip_thresholds.keys())
+
+    # Combine lists to calculate medians for all relevant columns at once
+    all_numerical_cols_for_stats = cols_for_percentile_clip + cols_for_custom_clip
+
+    # Calculate median (for imputation) and p999 (for percentile clipping)
+    stats_exprs = [F.percentile_approx(F.col(c).cast(FloatType()), 0.5).alias(f"{c}_median") for c in all_numerical_cols_for_stats]
+    stats_exprs += [F.percentile_approx(F.col(c).cast(FloatType()), 0.999).alias(f"{c}_p999") for c in cols_for_percentile_clip]
+
+    # Collect statistics
     try:
         stats_row = df.agg(*stats_exprs).collect()[0]
     except IndexError:
-        print("Warning: Could not calculate statistics for loan features. Using default imputation values.")
+        print("Warning: Could not calculate statistics. Using default imputation values.")
         stats_row = {}
 
-    # Extract collected stats into simple dictionaries
-    median_map = {c: stats_row[f"{c}_median"][0] if f"{c}_median" in stats_row and stats_row[f"{c}_median"] is not None else 0.0 for c in numerical_cols}
-    p999_map = {c: stats_row[f"{c}_p999"][0] if f"{c}_p999" in stats_row and stats_row[f"{c}_p999"] is not None else 1e9 for c in numerical_cols}
+    # Extract collected stats into dictionaries
+    median_map = {c: stats_row.get(f"{c}_median", 0.0) for c in all_numerical_cols_for_stats}
+    p999_map = {c: stats_row.get(f"{c}_p999", 1e9) for c in cols_for_percentile_clip}
 
-    # Print the 99.9th percentile values for EDA
     print("\n--- 99.9th Percentile (Outlier Thresholds) for EDA ---")
     pprint.pprint(p999_map)
     print("-----------------------------------------------------\n")
     
-    # Validation, Outlier Clipping, and Imputation Loop
-    for col_name in numerical_cols:
+    # --- Processing Loop for Custom Clipping ---
+    print("Applying custom clipping and validation rules...")
+    for col_name, upper_bound in custom_clip_thresholds.items():
         median_val = median_map.get(col_name, 0.0)
-        p999_val = p999_map.get(col_name, 1e9)
 
-        # Ensure the column is float for robust operations
+        # Ensure column is float for robust operations
         df = df.withColumn(col_name, F.col(col_name).cast(FloatType()))
         
-        # Clip Anomalously Large Values (> P99.9) and Negative Values (< 0) to NULL
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name) > F.lit(p999_val), F.lit(None).cast(FloatType()))  # Outlier clip
-            .when(F.col(col_name) < F.lit(0), F.lit(None).cast(FloatType()))         # Negative check
-            .otherwise(F.col(col_name))
-        )
-
-        # Impute NULL values (original missing, negative, or clipped outliers) with Median
+        # 1. Impute original NULLs with the median
         df = df.withColumn(col_name,
             F.when(F.col(col_name).isNull(), F.lit(median_val))
             .otherwise(F.col(col_name))
         )
+        
+        # 2. Replace any negative values with 0
+        df = df.withColumn(col_name,
+            F.when(F.col(col_name) < 0, F.lit(0))
+            .otherwise(F.col(col_name))
+        )
+        
+        # 3. Clip values exceeding the defined upper bound
+        df = df.withColumn(col_name,
+            F.when(F.col(col_name) > F.lit(upper_bound), F.lit(upper_bound))
+            .otherwise(F.col(col_name))
+        )
 
+    # --- Processing Loop for 99.9th Percentile Clipping ---
+    print("Applying 99.9th percentile clipping...")
+    for col_name in cols_for_percentile_clip:
+        median_val = median_map.get(col_name, 0.0)
+        p999_val = p999_map.get(col_name, 1e9)
+
+        # Ensure column is float
+        df = df.withColumn(col_name, F.col(col_name).cast(FloatType()))
+
+        # 1. Impute original NULLs with the median
+        df = df.withColumn(col_name,
+            F.when(F.col(col_name).isNull(), F.lit(median_val))
+            .otherwise(F.col(col_name))
+        )
+        
+        # 2. Replace any negative values with 0
+        df = df.withColumn(col_name,
+            F.when(F.col(col_name) < 0, F.lit(0))
+            .otherwise(F.col(col_name))
+        )
+        
+        # 3. Clip values exceeding the P99.9 threshold
+        df = df.withColumn(col_name,
+            F.when(F.col(col_name) > F.lit(p999_val), F.lit(p999_val))
+            .otherwise(F.col(col_name))
+        )
 
     # 5. Change nominal to numerical (One-Hot Encoding for Loan Type)
     loan_type_list = [
@@ -157,7 +201,6 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     # Split the comma-separated string into an array
     df_split = df.withColumn(
         "loan_array",
-        # FIX: Use raw string r",\s*" to avoid SyntaxWarning
         F.split(F.col("type_of_loan"), r",\s*")
     )
 
@@ -174,59 +217,46 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
 
     df = (
         df_exploded
-        # Group by all relevant columns
         .groupBy(*grouping_cols)
-        # Pivot the 'loan_type_clean' column using the pre-defined list
         .pivot("loan_type_clean", loan_type_list)
-        # Sum the 'count' column (the 1s we added)
         .sum("count")
     ).fillna(0) # Fill NaN values created by the pivot with 0
 
-    # 6. Validation Check: Ensure sum of OHE loan columns equals num_of_loan
-    
-    # Note: Loan type list columns must exist after the pivot in Step 5
+    # 6. Correct num_of_loan based on the one-hot encoded loan types
     loan_type_cols = loan_type_list
     
     # Calculate the sum of the one-hot encoded columns
-    # We use sum() on a list of PySpark Column objects
     sum_loan_types_expr = sum([F.col(c) for c in loan_type_cols])
     
-    # Add a column for the calculated sum (cast to Integer for comparison)
+    # Add a column for the calculated sum
     df = df.withColumn("loan_type_count_sum", sum_loan_types_expr.cast(IntegerType()))
     
-    # Add a flag to check consistency: 1 if consistent, 0 if inconsistent
-    df = df.withColumn("loan_count_is_valid", 
-        F.when(
-            F.col("loan_type_count_sum") == F.col("num_of_loan"), 
-            F.lit(1)
-        ).otherwise(F.lit(0))
-    )
+    # **MODIFIED**: Overwrite num_of_loan with the more reliable calculated count
+    print("Overwriting 'num_of_loan' with calculated count from loan types.")
+    df = df.withColumn("num_of_loan", F.col("loan_type_count_sum"))
 
     # 7. Change ordinal data to scale for credit_mix
     df = df.withColumn("credit_mix_encoded",
-        F.when(F.col("credit_mix") == "Good", 3)      # Highest score for 'Good'
-        .when(F.col("credit_mix") == "Standard", 2) # Mid score for 'Standard'
-        .when(F.col("credit_mix") == "Bad", 1)      # Lowest score for 'Bad'
-        .otherwise(F.lit(None)) # Handle NULL/missing values
+        F.when(F.col("credit_mix") == "Good", 3)
+        .when(F.col("credit_mix") == "Standard", 2)
+        .when(F.col("credit_mix") == "Bad", 1)
+        .otherwise(F.lit(None))
     )
-
 
     # 8. Augment and adds new columns for credit_history
     df = (
         df
-        # Extract the years
         .withColumn(
             "credit_history_years",
             F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sYears", 1).cast("integer")
         )
-        # Extract the months
         .withColumn(
             "credit_history_months",
             F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sMonths", 1).cast("integer")
         )
     )
     
-    # Step 8 (Cont.): Calculate the total credit history age in months
+    # Calculate the total credit history age in months
     df = df.withColumn(
         "credit_history_months_total",
         (F.col("credit_history_years") * F.lit(12) + F.col("credit_history_months")).cast(IntegerType())
@@ -235,8 +265,8 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     # 9. Encode spending levels
     df = df.withColumn(
         "spending_level_encoded",
-        F.when(F.col("payment_behaviour").like("High_spent%"), 2)  # Assign 2 to High_spent
-        .when(F.col("payment_behaviour").like("Low_spent%"), 1)   # Assign 1 to Low_spent
+        F.when(F.col("payment_behaviour").like("High_spent%"), 2)
+        .when(F.col("payment_behaviour").like("Low_spent%"), 1)
         .otherwise(F.lit(None))
     )
     
@@ -281,12 +311,10 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         "credit_mix_encoded": IntegerType(),
         "credit_history_years": IntegerType(),
         "credit_history_months": IntegerType(),
-        # New column for total credit history in months
         "credit_history_months_total": IntegerType(), 
         "spending_level_encoded": IntegerType(),
         "transaction_value_encoded": IntegerType(),
-        "loan_type_count_sum": IntegerType(), # New validation column
-        "loan_count_is_valid": IntegerType(), # New validation flag
+        "loan_type_count_sum": IntegerType(),
     }
     
     # Add pivoted loan columns to the type map (set to IntegerType, 0 or 1)
@@ -298,7 +326,7 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         if column in df.columns:
             df = df.withColumn(column, col(column).cast(new_type))
 
-    # save silver table - IRL connect to database to write
+    # save silver table
     partition_name = "silver_features_financials_" + snapshot_date_str.replace('-','_') + '.parquet'
     filepath = silver_financials_directory + partition_name
     
