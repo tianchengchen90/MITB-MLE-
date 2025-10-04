@@ -93,7 +93,8 @@ def process_gold_feature_store(snapshot_date_str, silver_aggregated_directory, g
         "num_of_loan", 
         "credit_history_years", 
         "credit_history_months", 
-        "payment_behaviour"
+        "payment_behaviour",
+        "credit_history_age"
     ]
     
     # Use selectExpr to safely drop columns only if they exist
