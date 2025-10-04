@@ -16,6 +16,8 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     Reads the bronze loan data CSV, cleans the data using PySpark native operations,
     performs outlier detection and imputation on numerical features, 
     transforms categorical/ordinal features, and writes the result to a silver Parquet table.
+    
+    The row count is maintained by imputing 'type_of_loan' before explosion.
     """
     # prepare arguments
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date()
@@ -91,6 +93,17 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
             ).otherwise(F.col(col_name))
         )
     
+    # ----------------------------------------------------------------------
+    # ✨ FIX FOR ROW COUNT ISSUE: Impute NULLs/blanks in 'type_of_loan' 
+    # to 'Not Specified' BEFORE the explode operation in step 5.
+    # This prevents F.explode from dropping rows.
+    # ----------------------------------------------------------------------
+    df = df.withColumn(
+        "type_of_loan",
+        F.when(F.col("type_of_loan").isNull(), F.lit("Not Specified"))
+         .otherwise(F.col("type_of_loan"))
+    )
+
     # 4. Numerical Feature Validation, Outlier Clipping, and Median Imputation
     cols_for_percentile_clip = [
         "annual_income", "monthly_inhand_salary", 
@@ -147,6 +160,8 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         "Auto Loan", "Credit-Builder Loan", "Debt Consolidation Loan", "Home Equity Loan", 
         "Mortgage Loan", "Not Specified", "Payday Loan", "Personal Loan", "Student Loan"
     ]
+    
+    # Row count maintained here because 'type_of_loan' is imputed to 'Not Specified' if Null.
     df_split = df.withColumn("loan_array", F.split(F.col("type_of_loan"), r",\s*"))
     df_exploded = df_split.withColumn("loan_type_clean", F.explode(F.col("loan_array")))
     df_exploded = df_exploded.withColumn("count", F.lit(1))
@@ -160,7 +175,7 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     ).fillna(0)
 
     # ##################################################################
-    # ## ✨ NEW: Convert dummified loan columns to snake_case         ##
+    # ## ✨ NEW: Convert dummified loan columns to snake_case         ##
     # ##################################################################
     def to_snake_case(name):
         s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
