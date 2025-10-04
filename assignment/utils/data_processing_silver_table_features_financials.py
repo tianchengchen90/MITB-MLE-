@@ -121,6 +121,11 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     median_map = {c: stats_row[f"{c}_median"][0] if f"{c}_median" in stats_row and stats_row[f"{c}_median"] is not None else 0.0 for c in numerical_cols}
     p999_map = {c: stats_row[f"{c}_p999"][0] if f"{c}_p999" in stats_row and stats_row[f"{c}_p999"] is not None else 1e9 for c in numerical_cols}
 
+    # Print the 99.9th percentile values for EDA
+    print("\n--- 99.9th Percentile (Outlier Thresholds) for EDA ---")
+    pprint.pprint(p999_map)
+    print("-----------------------------------------------------\n")
+    
     # Validation, Outlier Clipping, and Imputation Loop
     for col_name in numerical_cols:
         median_val = median_map.get(col_name, 0.0)
