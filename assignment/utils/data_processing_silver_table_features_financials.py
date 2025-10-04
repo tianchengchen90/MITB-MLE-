@@ -131,10 +131,15 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         print("Warning: Could not calculate statistics. Using default imputation values.")
         stats_row = {}
 
-    # Extract collected stats into dictionaries
-    median_map = {c: stats_row.get(f"{c}_median", 0.0) for c in all_numerical_cols_for_stats}
-    p999_map = {c: stats_row.get(f"{c}_p999", 1e9) for c in cols_for_percentile_clip}
+    # ##################################################################
+    # ## 🐛 BUG FIX: Convert the PySpark Row to a Python dictionary  ##
+    # ##################################################################
+    stats_dict = stats_row.asDict()
 
+    # Extract collected stats into dictionaries using the new stats_dict
+    median_map = {c: stats_dict.get(f"{c}_median", 0.0) for c in all_numerical_cols_for_stats}
+    p999_map = {c: stats_dict.get(f"{c}_p999", 1e9) for c in cols_for_percentile_clip}
+    
     print("\n--- 99.9th Percentile (Outlier Thresholds) for EDA ---")
     pprint.pprint(p999_map)
     print("-----------------------------------------------------\n")
