@@ -1,7 +1,3 @@
-import os
-import glob
-import pandas as pd
-import matplotlib.pyplot as plt
 import random
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -9,6 +5,7 @@ import pprint
 import pyspark
 import pyspark.sql.functions as F
 import argparse
+import re
 
 from pyspark.sql.functions import col, lit, when, split, explode, regexp_extract
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
@@ -21,7 +18,6 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     transforms categorical/ordinal features, and writes the result to a silver Parquet table.
     """
     # prepare arguments
-    # Use .date() for compatibility with DateType
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date()
     
     # connect to bronze table
@@ -77,13 +73,12 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
             F.regexp_replace(F.col(col_name).cast('string'), '_', '')
         )
         
-    # Remove 'danger' string from payment_behaviour
     df = df.withColumn(
         'payment_behaviour',
         F.regexp_replace(F.col('payment_behaviour').cast('string'), '!@9#%8', '')
     )
 
-    # 3. Replace blank whitespace or empty strings (r'^\s*$') with None (NULL)
+    # 3. Replace blank whitespace or empty strings with None (NULL)
     blank_regex = r'^\s*$'
     cols_to_clean_blanks = ['type_of_loan', 'credit_mix', 'changed_credit_limit']
     
@@ -97,16 +92,12 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         )
     
     # 4. Numerical Feature Validation, Outlier Clipping, and Median Imputation
-    
-    # Define columns for percentile-based clipping
     cols_for_percentile_clip = [
         "annual_income", "monthly_inhand_salary", 
         "changed_credit_limit", "outstanding_debt", 
         "credit_utilization_ratio", "total_emi_per_month", 
         "amount_invested_monthly", "monthly_balance"
     ]
-
-    # Define columns with specific, hard-coded clipping thresholds
     custom_clip_thresholds = {
         'interest_rate': 40,
         'num_bank_accounts': 15,
@@ -116,27 +107,17 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         'delay_from_due_date': 100
     }
     cols_for_custom_clip = list(custom_clip_thresholds.keys())
-
-    # Combine lists to calculate medians for all relevant columns at once
     all_numerical_cols_for_stats = cols_for_percentile_clip + cols_for_custom_clip
-
-    # Calculate median (for imputation) and p999 (for percentile clipping)
     stats_exprs = [F.percentile_approx(F.col(c).cast(FloatType()), 0.5).alias(f"{c}_median") for c in all_numerical_cols_for_stats]
     stats_exprs += [F.percentile_approx(F.col(c).cast(FloatType()), 0.999).alias(f"{c}_p999") for c in cols_for_percentile_clip]
 
-    # Collect statistics
     try:
         stats_row = df.agg(*stats_exprs).collect()[0]
     except IndexError:
         print("Warning: Could not calculate statistics. Using default imputation values.")
         stats_row = {}
-
-    # ##################################################################
-    # ## 🐛 BUG FIX: Convert the PySpark Row to a Python dictionary  ##
-    # ##################################################################
+        
     stats_dict = stats_row.asDict()
-
-    # Extract collected stats into dictionaries using the new stats_dict
     median_map = {c: stats_dict.get(f"{c}_median", 0.0) for c in all_numerical_cols_for_stats}
     p999_map = {c: stats_dict.get(f"{c}_p999", 1e9) for c in cols_for_percentile_clip}
     
@@ -144,80 +125,31 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     pprint.pprint(p999_map)
     print("-----------------------------------------------------\n")
     
-    # --- Processing Loop for Custom Clipping ---
     print("Applying custom clipping and validation rules...")
     for col_name, upper_bound in custom_clip_thresholds.items():
         median_val = median_map.get(col_name, 0.0)
-
-        # Ensure column is float for robust operations
         df = df.withColumn(col_name, F.col(col_name).cast(FloatType()))
-        
-        # 1. Impute original NULLs with the median
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name).isNull(), F.lit(median_val))
-            .otherwise(F.col(col_name))
-        )
-        
-        # 2. Replace any negative values with 0
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name) < 0, F.lit(0))
-            .otherwise(F.col(col_name))
-        )
-        
-        # 3. Clip values exceeding the defined upper bound
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name) > F.lit(upper_bound), F.lit(upper_bound))
-            .otherwise(F.col(col_name))
-        )
+        df = df.withColumn(col_name, F.when(F.col(col_name).isNull(), F.lit(median_val)).otherwise(F.col(col_name)))
+        df = df.withColumn(col_name, F.when(F.col(col_name) < 0, F.lit(0)).otherwise(F.col(col_name)))
+        df = df.withColumn(col_name, F.when(F.col(col_name) > F.lit(upper_bound), F.lit(upper_bound)).otherwise(F.col(col_name)))
 
-    # --- Processing Loop for 99.9th Percentile Clipping ---
     print("Applying 99.9th percentile clipping...")
     for col_name in cols_for_percentile_clip:
         median_val = median_map.get(col_name, 0.0)
         p999_val = p999_map.get(col_name, 1e9)
-
-        # Ensure column is float
         df = df.withColumn(col_name, F.col(col_name).cast(FloatType()))
-
-        # 1. Impute original NULLs with the median
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name).isNull(), F.lit(median_val))
-            .otherwise(F.col(col_name))
-        )
-        
-        # 2. Replace any negative values with 0
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name) < 0, F.lit(0))
-            .otherwise(F.col(col_name))
-        )
-        
-        # 3. Clip values exceeding the P99.9 threshold
-        df = df.withColumn(col_name,
-            F.when(F.col(col_name) > F.lit(p999_val), F.lit(p999_val))
-            .otherwise(F.col(col_name))
-        )
+        df = df.withColumn(col_name, F.when(F.col(col_name).isNull(), F.lit(median_val)).otherwise(F.col(col_name)))
+        df = df.withColumn(col_name, F.when(F.col(col_name) < 0, F.lit(0)).otherwise(F.col(col_name)))
+        df = df.withColumn(col_name, F.when(F.col(col_name) > F.lit(p999_val), F.lit(p999_val)).otherwise(F.col(col_name)))
 
     # 5. Change nominal to numerical (One-Hot Encoding for Loan Type)
     loan_type_list = [
         "Auto Loan", "Credit-Builder Loan", "Debt Consolidation Loan", "Home Equity Loan", 
         "Mortgage Loan", "Not Specified", "Payday Loan", "Personal Loan", "Student Loan"
     ]
-    
-    # Split the comma-separated string into an array
-    df_split = df.withColumn(
-        "loan_array",
-        F.split(F.col("type_of_loan"), r",\s*")
-    )
-
-    # Explode the array so each loan type gets its own row
-    df_exploded = df_split.withColumn("loan_type_clean",
-        F.explode(F.col("loan_array"))
-    )
-
-    # Add a column with value 1 to count occurrences in the pivot
+    df_split = df.withColumn("loan_array", F.split(F.col("type_of_loan"), r",\s*"))
+    df_exploded = df_split.withColumn("loan_type_clean", F.explode(F.col("loan_array")))
     df_exploded = df_exploded.withColumn("count", F.lit(1))
-
-    # Group by all original columns (excluding the temporary/transformed ones)
     grouping_cols = [c for c in df_exploded.columns if c not in ["type_of_loan", "loan_array", "loan_type_clean", "count"]]
 
     df = (
@@ -225,18 +157,29 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
         .groupBy(*grouping_cols)
         .pivot("loan_type_clean", loan_type_list)
         .sum("count")
-    ).fillna(0) # Fill NaN values created by the pivot with 0
+    ).fillna(0)
+
+    # ##################################################################
+    # ## ✨ NEW: Convert dummified loan columns to snake_case         ##
+    # ##################################################################
+    def to_snake_case(name):
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+        return s2.replace('-', '_').replace(' ', '_')
+
+    loan_type_cols_snake = [to_snake_case(c) for c in loan_type_list]
+    
+    print("Renaming loan type columns to snake_case...")
+    for original_col, new_col in zip(loan_type_list, loan_type_cols_snake):
+        if original_col in df.columns:
+            df = df.withColumnRenamed(original_col, new_col)
 
     # 6. Correct num_of_loan based on the one-hot encoded loan types
-    loan_type_cols = loan_type_list
+    # **MODIFIED**: Use the new snake_cased column names
+    sum_loan_types_expr = sum([F.col(c) for c in loan_type_cols_snake])
     
-    # Calculate the sum of the one-hot encoded columns
-    sum_loan_types_expr = sum([F.col(c) for c in loan_type_cols])
-    
-    # Add a column for the calculated sum
     df = df.withColumn("loan_type_count_sum", sum_loan_types_expr.cast(IntegerType()))
     
-    # **MODIFIED**: Overwrite num_of_loan with the more reliable calculated count
     print("Overwriting 'num_of_loan' with calculated count from loan types.")
     df = df.withColumn("num_of_loan", F.col("loan_type_count_sum"))
 
@@ -251,79 +194,47 @@ def process_silver_table(snapshot_date_str, bronze_financials_directory, silver_
     # 8. Augment and adds new columns for credit_history
     df = (
         df
-        .withColumn(
-            "credit_history_years",
-            F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sYears", 1).cast("integer")
-        )
-        .withColumn(
-            "credit_history_months",
-            F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sMonths", 1).cast("integer")
-        )
+        .withColumn("credit_history_years", F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sYears", 1).cast("integer"))
+        .withColumn("credit_history_months", F.regexp_extract(F.col("credit_history_age"), r"(\d+)\sMonths", 1).cast("integer"))
     )
-    
-    # Calculate the total credit history age in months
-    df = df.withColumn(
-        "credit_history_months_total",
-        (F.col("credit_history_years") * F.lit(12) + F.col("credit_history_months")).cast(IntegerType())
-    )
+    df = df.withColumn("credit_history_months_total", (F.col("credit_history_years") * 12 + F.col("credit_history_months")).cast(IntegerType()))
     
     # 9. Encode spending levels
-    df = df.withColumn(
-        "spending_level_encoded",
+    df = df.withColumn("spending_level_encoded",
         F.when(F.col("payment_behaviour").like("High_spent%"), 2)
         .when(F.col("payment_behaviour").like("Low_spent%"), 1)
         .otherwise(F.lit(None))
     )
     
     # 10. Encode payment value
-    df = df.withColumn(
-        "transaction_value_encoded",
+    df = df.withColumn("transaction_value_encoded",
         F.when(F.col("payment_behaviour").contains("Large_value"), 3)
         .when(F.col("payment_behaviour").contains("Medium_value"), 2)
         .when(F.col("payment_behaviour").contains("Small_value"), 1)
         .otherwise(F.lit(None))
     )
     
-    # Add the snapshot_date column
     df = df.withColumn("snapshot_date", F.lit(snapshot_date))
 
     # --- End PySpark-Native Data Cleaning ---
 
     # Dictionary specifying columns and their desired datatypes
     column_type_map = {
-        "customer_id": StringType(),
-        "annual_income": FloatType(),
-        "monthly_inhand_salary": FloatType(),
-        "num_bank_accounts": IntegerType(),
-        "num_credit_card": IntegerType(),
-        "interest_rate": IntegerType(),
-        "num_of_loan": IntegerType(),
-        "type_of_loan": StringType(), 
-        "delay_from_due_date": IntegerType(),
-        "num_of_delayed_payment": IntegerType(),
-        "changed_credit_limit": FloatType(),
-        "num_credit_inquiries": IntegerType(),
-        "credit_mix": StringType(),
-        "outstanding_debt": FloatType(),
-        "credit_utilization_ratio": FloatType(),
-        "credit_history_age": StringType(),
-        "payment_of_min_amount": StringType(),
-        "total_emi_per_month": FloatType(),
-        "amount_invested_monthly": FloatType(),
-        "payment_behaviour": StringType(),
-        "monthly_balance": FloatType(),
-        "snapshot_date": DateType(),
-        "credit_mix_encoded": IntegerType(),
-        "credit_history_years": IntegerType(),
-        "credit_history_months": IntegerType(),
-        "credit_history_months_total": IntegerType(), 
-        "spending_level_encoded": IntegerType(),
-        "transaction_value_encoded": IntegerType(),
+        "customer_id": StringType(), "annual_income": FloatType(), "monthly_inhand_salary": FloatType(),
+        "num_bank_accounts": IntegerType(), "num_credit_card": IntegerType(), "interest_rate": IntegerType(),
+        "num_of_loan": IntegerType(), "type_of_loan": StringType(), "delay_from_due_date": IntegerType(),
+        "num_of_delayed_payment": IntegerType(), "changed_credit_limit": FloatType(), "num_credit_inquiries": IntegerType(),
+        "credit_mix": StringType(), "outstanding_debt": FloatType(), "credit_utilization_ratio": FloatType(),
+        "credit_history_age": StringType(), "payment_of_min_amount": StringType(), "total_emi_per_month": FloatType(),
+        "amount_invested_monthly": FloatType(), "payment_behaviour": StringType(), "monthly_balance": FloatType(),
+        "snapshot_date": DateType(), "credit_mix_encoded": IntegerType(), "credit_history_years": IntegerType(),
+        "credit_history_months": IntegerType(), "credit_history_months_total": IntegerType(), 
+        "spending_level_encoded": IntegerType(), "transaction_value_encoded": IntegerType(),
         "loan_type_count_sum": IntegerType(),
     }
     
-    # Add pivoted loan columns to the type map (set to IntegerType, 0 or 1)
-    for loan_type in loan_type_list:
+    # **MODIFIED**: Add new snake_cased pivoted loan columns to the type map
+    for loan_type in loan_type_cols_snake:
         column_type_map[loan_type] = IntegerType() 
 
     # Final explicit casting to enforce schema
