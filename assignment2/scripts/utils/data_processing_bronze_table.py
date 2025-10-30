@@ -3,24 +3,39 @@ from datetime import datetime
 
 from pyspark.sql.functions import col
 
-def process_bronze_table(table_name, source, db, snapshot_date_str, spark):
-    """
-    Function to read data from source and create bronze tables
-    """
-    # create bronze table 
-    bronze_table = os.path.join(db, table_name)
-    if not os.path.exists(bronze_table):
-        os.makedirs(bronze_table)
-
+def process_bronze_table(
+    file_path, snapshot_date_str, output_directory, output_prefix, spark, date_filter_column="snapshot_date"
+):
     # prepare arguments
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
 
     # load data - IRL ingest from back end source system
-    df = spark.read.csv(source, header=True, inferSchema=True).filter(col('snapshot_date') == snapshot_date)
+    df = spark.read.csv(file_path, header=True, inferSchema=True)
+
+    # apply date filtering if the column exists
+    if date_filter_column in df.columns:
+        # Convert snapshot_date column to standard date format for comparison
+        # Handle both yyyy-MM-dd and d/M/yy formats
+        from pyspark.sql.functions import to_date, coalesce
+        df = df.withColumn(
+            date_filter_column,
+            coalesce(
+                to_date(col(date_filter_column), 'yyyy-MM-dd'),
+                to_date(col(date_filter_column), 'd/M/yy')
+            )
+        )
+        df = df.filter(col(date_filter_column) == snapshot_date_str)
+
+    print(f"{file_path} - {snapshot_date_str} row count: {df.count()}")
 
     # save bronze table to datamart - IRL connect to database to write
-    partition_name = snapshot_date_str.replace('-','_') + '.csv'
-    filepath = os.path.join(bronze_table, partition_name)
+    # create output directory if it doesn't exist
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    partition_name = f"{output_prefix}_{snapshot_date_str.replace('-', '_')}.csv"
+    filepath = os.path.join(output_directory, partition_name)
     df.toPandas().to_csv(filepath, index=False)
+    print(f"saved to: {filepath}")
 
     return df
