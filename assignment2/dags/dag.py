@@ -179,4 +179,4 @@ with DAG(
     # Define task dependencies to run scripts sequentially
     # Define task dependencies to run scripts sequentially
     [feature_store_completed, label_store_completed] >> model_inference_start 
-    model_inference_start >> model_inference >> model_inference_completed
+    model_inference_start >> model_inference >> model_inference_completed 
