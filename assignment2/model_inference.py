@@ -29,6 +29,9 @@ from sklearn.model_selection import train_test_split
 
 def main(snapshotdate, modelname):
     print('\n\n---starting job---\n\n')
+
+    os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk-arm64"
+    os.environ["PATH"] += os.pathsep + os.path.join(os.environ["JAVA_HOME"], "bin")
     
     # Initialize SparkSession
     spark = pyspark.sql.SparkSession.builder \
@@ -60,26 +63,64 @@ def main(snapshotdate, modelname):
 
 
     # --- load feature store ---
-    feature_location = "data/feature_clickstream.csv"
-    
-    # Load CSV into DataFrame - connect to feature store
-    features_store_sdf = spark.read.csv(feature_location, header=True, inferSchema=True)
-    # print("row_count:",features_store_sdf.count())
+    folder_path = "datamart/gold/feature_store/"
+    files_list = [folder_path+os.path.basename(f) for f in glob.glob(os.path.join(folder_path, '*'))]
+    features_store_sdf = spark.read.option("header", "true").parquet(*files_list)
+    features_store_sdf = features_store_sdf.withColumnRenamed(
+    "snapshot_date","feature_snapshot_date"
+    )
+
+    print("row_count:",features_store_sdf.count())
     
     
     # extract feature store
-    features_sdf = features_store_sdf.filter((col("snapshot_date") == config["snapshot_date"]))
+    features_sdf = features_store_sdf.filter((col("feature_snapshot_date") == config["snapshot_date"]))
     print("extracted features_sdf", features_sdf.count(), config["snapshot_date"])
+
+    features_pdf = features_sdf.toPandas()
+    features_pdf
+
+    # --- skip if no data for this snapshot ---
+    if features_sdf.count() == 0:
+        print(f"No feature data found for snapshot {config['snapshot_date_str']}. Skipping inference.")
+        spark.stop()
+        print('---skipped job---\n\n')
+        return
     
     features_pdf = features_sdf.toPandas()
 
 
     # --- preprocess data for modeling ---
     # prepare X_inference
-    feature_cols = [fe_col for fe_col in features_pdf.columns if fe_col.startswith('fe_')]
-    X_inference = features_pdf[feature_cols]
+    exclude_cols = [
+    "customer_id", "feature_snapshot_date"
+    ]
+    feature_cols = [c for c in features_pdf.columns if c not in exclude_cols]
+    X_inference = features_pdf[feature_cols].copy()
+
+    # Identify categorical columns
+    cat_cols = X_inference.select_dtypes(include=['object']).columns.tolist()
+    
+    # Handle categorical encoding
+    for col in cat_cols:
+        # Try to reuse training mappings if stored; otherwise, auto-map
+        try:
+            mapping = model_artefact["preprocessing_transformers"].get(f"{col}_mapping", None)
+            if mapping is not None:
+                X_inference[col] = X_inference[col].map(mapping)
+            else:
+                # fallback: derive from inference data
+                X_inference[col] = X_inference[col].astype('category').cat.codes
+        except Exception as e:
+            print(f"Warning: Could not map column {col} ({e}), fallback to category codes.")
+            X_inference[col] = X_inference[col].astype('category').cat.codes
+    
+    # Replace NaN / inf values
+    X_inference.replace([np.inf, -np.inf], np.nan, inplace=True)
+    X_inference.fillna(X_inference.mean(), inplace=True)
     
     # apply transformer - standard scaler
+    X_inference = X_inference.astype(float)
     transformer_stdscaler = model_artefact["preprocessing_transformers"]["stdscaler"]
     X_inference = transformer_stdscaler.transform(X_inference)
     
@@ -94,14 +135,19 @@ def main(snapshotdate, modelname):
     y_inference = model.predict_proba(X_inference)[:, 1]
     
     # prepare output
-    y_inference_pdf = features_pdf[["Customer_ID","snapshot_date"]].copy()
+    y_inference_pdf = features_pdf[["customer_id","feature_snapshot_date"]].copy()
     y_inference_pdf["model_name"] = config["model_name"]
     y_inference_pdf["model_predictions"] = y_inference
+
+    print("Sample predictions:")
+    print(y_inference_pdf.head())
     
+    print("Mean predicted probability:", round(y_inference.mean(), 4))
+    print("Total records:", len(y_inference_pdf))
 
     # --- save model inference to datamart gold table ---
     # create bronze datalake
-    gold_directory = f"datamart/gold/model_predictions/{config["model_name"][:-4]}/"
+    gold_directory = f"datamart/gold/model_predictions/{config['model_name'][:-4]}/"
     print(gold_directory)
     
     if not os.path.exists(gold_directory):
