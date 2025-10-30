@@ -62,6 +62,10 @@ with DAG(
     dep_check_source_label_data >> bronze_label_store >> silver_label_store >> gold_label_store >> label_store_completed
 
     # --- feature store ---
+    dep_check_source_data_bronze_1 = DummyOperator(task_id="dep_check_source_data_bronze_1")
+    dep_check_source_data_bronze_2 = DummyOperator(task_id="dep_check_source_data_bronze_2")
+    dep_check_source_data_bronze_3 = DummyOperator(task_id="dep_check_source_data_bronze_3")
+
     bronze_table_1 = BashOperator(
         task_id="bronze_table_1",
         bash_command=(
@@ -137,11 +141,6 @@ with DAG(
     )
     model_inference_completed = DummyOperator(task_id="model_inference_completed")
 
-    
-    # Define task dependencies to run scripts sequentially
-    feature_store_completed >> model_inference_start
-    model_inference_start >> model_1_inference >> model_inference_completed
-    model_inference_start >> model_2_inference >> model_inference_completed
 
 
     # --- model monitoring ---
@@ -178,6 +177,6 @@ with DAG(
     model_automl_completed = DummyOperator(task_id="model_automl_completed")
     
     # Define task dependencies to run scripts sequentially
-    feature_store_completed >> model_automl_start
-    label_store_completed >> model_automl_start
-    model_automl_start >> model_1_automl >> model_automl_completed
+    # Define task dependencies to run scripts sequentially
+    [feature_store_completed, label_store_completed] >> model_inference_start 
+    model_inference_start >> model_inference >> model_inference_completed

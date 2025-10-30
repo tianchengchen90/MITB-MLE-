@@ -35,24 +35,16 @@ def main(snapshotdate):
     # load arguments
     date_str = snapshotdate
 
+    print(f"Processing silver label store for snapshot: {date_str}")
+    
     # create bronze datalake
     bronze_lms_directory = "datamart/bronze/lms/"
-
+    
     if not os.path.exists(bronze_lms_directory):
         os.makedirs(bronze_lms_directory)
 
-    # source data file (relative to /opt/airflow/scripts/)
-    csv_file = "../data/lms_loan_daily.csv"
-
     # run data processing
-    utils.data_processing_bronze_table.process_bronze_table(
-        csv_file,
-        date_str,
-        bronze_lms_directory,
-        "bronze_lms_loan_daily",
-        spark,
-        date_filter_column="snapshot_date"
-    )
+    utils.data_processing_bronze_table.process_bronze_table(date_str, bronze_lms_directory, spark)
     
     # end spark session
     spark.stop()
