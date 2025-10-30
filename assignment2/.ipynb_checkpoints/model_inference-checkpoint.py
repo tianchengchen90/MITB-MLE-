@@ -29,9 +29,6 @@ from sklearn.model_selection import train_test_split
 
 def main(snapshotdate, modelname):
     print('\n\n---starting job---\n\n')
-
-    os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-17-openjdk-arm64"
-    os.environ["PATH"] += os.pathsep + os.path.join(os.environ["JAVA_HOME"], "bin")
     
     # Initialize SparkSession
     spark = pyspark.sql.SparkSession.builder \
@@ -74,11 +71,9 @@ def main(snapshotdate, modelname):
     
     
     # extract feature store
-    features_sdf = features_store_sdf.filter((col("feature_snapshot_date") == config["snapshot_date"]))
+    features_sdf = features_store_sdf.filter((F.col("feature_snapshot_date") == config["snapshot_date"]))
     print("extracted features_sdf", features_sdf.count(), config["snapshot_date"])
 
-    features_pdf = features_sdf.toPandas()
-    features_pdf
 
     # --- skip if no data for this snapshot ---
     if features_sdf.count() == 0:
