@@ -185,6 +185,7 @@ with DAG(
     )
     model_inference_completed = DummyOperator(task_id="model_inference_completed")
 
+    feature_store_completed >> model_inference_start
     label_store_completed >> model_inference_start >> model_inference >> model_inference_completed
 
     # --- model monitoring ---
