@@ -25,18 +25,27 @@ def main(snapshotdate):
     # load arguments
     date_str = snapshotdate
 
-    # create silver datalake directories
-    bronze_lms_directory = "datamart/bronze/lms/"
-    silver_loan_daily_directory = "datamart/silver/loan_daily/"
-    base_datamart_dir = "datamart/"
+    # --- CORRECTED SECTION ---
 
-    if not os.path.exists(silver_loan_daily_directory):
-        os.makedirs(silver_loan_daily_directory)
+    # Define the BASE directories, which is what process_silver_table expects
+    bronze_base_directory = "datamart/bronze/"
+    silver_base_directory = "datamart/silver/"
+
+
+    if not os.path.exists(silver_base_directory):
+        os.makedirs(silver_base_directory)
 
     # run data processing
-    utils.data_processing_silver_table.process_silver_table_legacy(
-        date_str, bronze_lms_directory, silver_loan_daily_directory, spark, base_datamart_dir
+    # 1. Fixed variable names to match what is defined
+    # 2. Using the base directories as required by the util function
+    utils.data_processing_silver_table.process_silver_table(
+        date_str, 
+        bronze_base_directory, 
+        silver_base_directory, 
+        spark
     )
+
+    # --- END CORRECTED SECTION ---
 
     # end spark session
     spark.stop()

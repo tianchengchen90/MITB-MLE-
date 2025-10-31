@@ -26,24 +26,29 @@ def main(snapshotdate):
     # load arguments
     date_str = snapshotdate
 
-    # create gold datalake directories
+    # --- CORRECTED SECTION ---
+
+    # Define the output directory for the feature store
     gold_feature_store_directory = "datamart/gold/feature_store/"
+
+    # Define the base input directory for all silver data
+    silver_base_directory = "datamart/silver/"
 
     if not os.path.exists(gold_feature_store_directory):
         os.makedirs(gold_feature_store_directory)
 
-    # Define all silver directories
-    silver_dirs = {
-        'loan_daily': "datamart/silver/loan_daily/",
-        'attributes': "datamart/silver/attributes/",
-        'financials': "datamart/silver/financials/",
-        'clickstream': "datamart/silver/clickstream/"
-    }
-
     # run data processing
-    utils.data_processing_gold_table.process_features_gold_table(
-        date_str, silver_dirs, gold_feature_store_directory, spark
+    # 1. Call the correct refactored function: create_feature_store
+    # 2. Pass the correct arguments: silver_base_directory (string)
+    
+    utils.data_processing_gold_table.create_feature_store(
+        date_str, 
+        silver_base_directory, 
+        gold_feature_store_directory, 
+        spark
     )
+    
+    # --- END CORRECTED SECTION ---
 
     # end spark session
     spark.stop()

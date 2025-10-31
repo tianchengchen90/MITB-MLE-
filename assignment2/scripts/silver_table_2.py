@@ -30,22 +30,35 @@ def main(snapshotdate):
     # create silver datalake directories
     bronze_clickstream_directory = "datamart/bronze/features/clickstream/"
     silver_clickstream_directory = "datamart/silver/clickstream/"
-    base_datamart_dir = "datamart/"
 
     if not os.path.exists(silver_clickstream_directory):
         os.makedirs(silver_clickstream_directory)
 
     # Process clickstream
     print(f"  Processing clickstream for {date_str}...")
-    bronze_clickstream_filepath = f"{bronze_clickstream_directory}bronze_feature_clickstream_{date_str_formatted}.csv"
+    
+    # --- CORRECTED SECTION ---
+    
+    # Fixed typo: was "bronze_feature_clickstream"
+    bronze_clickstream_filepath = f"{bronze_clickstream_directory}bronze_features_clickstream_{date_str_formatted}.csv"
     silver_clickstream_filepath = f"{silver_clickstream_directory}silver_clickstream_{date_str_formatted}.parquet"
 
     if os.path.exists(bronze_clickstream_filepath):
-        utils.data_processing_silver_table.process_silver_table(
-            'clickstream', bronze_clickstream_filepath, silver_clickstream_filepath, spark, base_datamart_dir
-        )
+        # 1. Load the bronze data
+        df_clk = spark.read.csv(bronze_clickstream_filepath, header=True, inferSchema=True)
+        # Convert columns to lowercase
+        df_clk = df_clk.select([col(c).alias(c.lower()) for c in df_clk.columns])
+
+        # 2. Call the CORRECT util function
+        df_clk_processed = utils.data_processing_silver_table.process_df_clickstream(df_clk)
+        
+        # 3. Save the silver data
+        df_clk_processed.write.mode("overwrite").parquet(silver_clickstream_filepath)
+        print(f"  Saved clickstream to: {silver_clickstream_filepath}")
+        
     else:
         print(f"  Warning: Bronze clickstream file not found at {bronze_clickstream_filepath}")
+
 
     # end spark session
     spark.stop()

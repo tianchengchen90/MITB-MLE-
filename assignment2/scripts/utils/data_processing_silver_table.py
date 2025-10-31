@@ -14,13 +14,12 @@ import argparse
 from pyspark.sql.functions import col
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 # --- NEW IMPORTS ---
-# Added Counter (for split_loan_type) and MapType (for the UDF)
 from collections import Counter
 from pyspark.sql.types import MapType
 
 
 # --- NEW HELPER FUNCTIONS ---
-# All the processing functions from your second script are placed here.
+# These functions appear correct as provided.
 
 ############################
 # Attributes
@@ -51,8 +50,6 @@ def process_df_attributes(df):
             df = df.withColumn(column, col(column).cast(new_type))
 
     # Enforce valid age constraints
-    # The oldest person in the world is a little less than 120 years old, so make everything above that invalid
-    # Minimum is 0 because some banks allow opening joint accounts for children
     df = df.withColumn(
         "age",
         F.when((col("age") >= 0) & (col("age") <= 120), col("age"))  # keep valid
@@ -150,10 +147,10 @@ def process_df_financials(df, silver_db, snapshot_date_str):
     # Split credit history age
     if 'credit_history_age' in df.columns:
         df = df.withColumn("credit_history_age_year",
-                            F.regexp_extract(col('credit_history_age'), r'(\d+)\s+Year', 1))
+                           F.regexp_extract(col('credit_history_age'), r'(\d+)\s+Year', 1))
         df = df.withColumn("credit_history_age_year", col("credit_history_age_year").cast(IntegerType()))
         df = df.withColumn("credit_history_age_month",
-                            F.regexp_extract(col('credit_history_age'), r'(\d+)\s+Month', 1))
+                           F.regexp_extract(col('credit_history_age'), r'(\d+)\s+Month', 1))
         df = df.withColumn("credit_history_age_month", col("credit_history_age_month").cast(IntegerType()))
         # Drop the original string column
         df = df.drop('credit_history_age')
@@ -297,29 +294,61 @@ def process_df_lms(df):
     return df
 
 
-# --- MODIFIED MAIN FUNCTION ---
-# This is the main function from your template script, now modified
-# to call your new helper functions.
+# --- CORRECTED MAIN FUNCTION ---
+# This function's pathing logic has been fixed to be robust.
+# The arguments are now 'bronze_base_dir' and 'silver_base_dir'
+# to reflect that they should be the root 'datamart/bronze/'
+# and 'datamart/silver/' directories.
 
-def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_lms_directory, spark):
+def process_silver_table(snapshot_date_str, bronze_base_dir, silver_base_dir, spark):
+    """
+    Processes all bronze files for a given snapshot date and
+    transforms them into silver parquet files.
+    """
+    
     # prepare arguments
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
+    date_str_formatted = snapshot_date_str.replace('-', '_')
 
+    # This dictionary maps a dataset name to its path and file components
+    # 'key': (bronze_subfolder, bronze_prefix, silver_subfolder, silver_prefix)
     datasets = {
-        "loan_daily": f"bronze_loan_daily_{snapshot_date_str.replace('-','_')}.csv",
-        "features_clickstream": f"bronze_features_clickstream_{snapshot_date_str.replace('-','_')}.csv",
-        "features_attributes": f"bronze_features_attributes_{snapshot_date_str.replace('-','_')}.csv",
-        "features_financials": f"bronze_features_financials_{snapshot_date_str.replace('-','_')}.csv"
+        "loan_daily": (
+            "lms", 
+            "bronze_lms_loan_daily", 
+            "loan_daily", 
+            "silver_loan_daily"
+        ),
+        "features_clickstream": (
+            "features/clickstream", 
+            "bronze_features_clickstream", 
+            "clickstream", 
+            "silver_clickstream"
+        ),
+        "features_attributes": (
+            "features/attributes", 
+            "bronze_features_attributes", 
+            "attributes", 
+            "silver_attributes"
+        ),
+        "features_financials": (
+            "features/financials", 
+            "bronze_features_financials", 
+            "financials", 
+            "silver_financials"
+        )
     }
 
     results = {}
     
     # connect to bronze table
-    for name, filename in datasets.items():
-        filepath = os.path.join(bronze_lms_directory, name, filename)
+    for name, (bronze_sub, bronze_prefix, silver_sub, silver_prefix) in datasets.items():
+        
+        bronze_filename = f"{bronze_prefix}_{date_str_formatted}.csv"
+        filepath = os.path.join(bronze_base_dir, bronze_sub, bronze_filename)
 
         if not os.path.exists(filepath):
-            print(f"Skipping {name}, no Bronze file for {snapshot_date}")
+            print(f"Skipping {name}, no Bronze file for {snapshot_date_str} at {filepath}")
             continue
         
         df = spark.read.csv(filepath, header=True, inferSchema=True)
@@ -333,9 +362,7 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_lms_dir
         # Convert all columns to lowercase to match the new processing functions
         df = df.select([col(c).alias(c.lower()) for c in df.columns])
         
-        # --- CLEANING LOGIC REPLACED ---
-        # The complex if/elif blocks are now replaced with
-        # simple calls to your new functions.
+        # --- CLEANING LOGIC ---
         
         if name == 'loan_daily':
             df = process_df_lms(df)
@@ -348,15 +375,15 @@ def process_silver_table(snapshot_date_str, bronze_lms_directory, silver_lms_dir
             
         elif name == "features_financials":
             # This function also saves the 'loan_type' table as a side-effect
-            df = process_df_financials(df, silver_lms_directory, snapshot_date_str)
+            # It needs the *base* silver directory
+            df = process_df_financials(df, silver_base_dir, snapshot_date_str)
 
         
         # save silver table
-        dataset_dir = os.path.join(silver_lms_directory, name)
+        dataset_dir = os.path.join(silver_base_dir, silver_sub)
         os.makedirs(dataset_dir, exist_ok=True)
-        outname = f"silver_{name}_{snapshot_date_str.replace('-', '_')}.parquet"
+        outname = f"{silver_prefix}_{date_str_formatted}.parquet"
         outpath = os.path.join(dataset_dir, outname)
-
         
         df.write.mode("overwrite").parquet(outpath)
         print('saved to:', outpath)

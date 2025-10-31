@@ -32,10 +32,14 @@ def main(snapshotdate):
     if not os.path.exists(gold_label_store_directory):
         os.makedirs(gold_label_store_directory)
 
+    # --- CORRECTED SECTION ---
+    
     # run data processing
     # dpd=30 means Days Past Due threshold for default
     # mob=6 means Months on Books minimum for observation
-    utils.data_processing_gold_table.process_labels_gold_table(
+    
+    # Called the correct refactored function: create_label_store
+    utils.data_processing_gold_table.create_label_store(
         date_str,
         silver_loan_daily_directory,
         gold_label_store_directory,
@@ -43,6 +47,8 @@ def main(snapshotdate):
         dpd=30,
         mob=6,
     )
+
+    # --- END CORRECTED SECTION ---
 
     # end spark session
     spark.stop()
