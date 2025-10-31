@@ -46,6 +46,7 @@ def main(snapshotdate, modelname):
     config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
     config["model_name"] = modelname
     config["model_bank_directory"] = "model_bank/"
+    
     config["model_artefact_filepath"] = config["model_bank_directory"] + config["model_name"]
     
     pprint.pprint(config)
@@ -60,7 +61,9 @@ def main(snapshotdate, modelname):
 
 
     # --- load feature store ---
+    
     folder_path = "datamart/gold/feature_store/"
+
     files_list = [folder_path+os.path.basename(f) for f in glob.glob(os.path.join(folder_path, '*'))]
     features_store_sdf = spark.read.option("header", "true").parquet(*files_list)
     features_store_sdf = features_store_sdf.withColumnRenamed(
@@ -88,7 +91,7 @@ def main(snapshotdate, modelname):
     # --- preprocess data for modeling ---
     # prepare X_inference
     exclude_cols = [
-    "customer_id", "feature_snapshot_date"
+    "customer_id", "feature_snapshot_date", "'loan_id'"
     ]
     feature_cols = [c for c in features_pdf.columns if c not in exclude_cols]
     X_inference = features_pdf[feature_cols].copy()
@@ -115,6 +118,7 @@ def main(snapshotdate, modelname):
     X_inference.fillna(X_inference.mean(), inplace=True)
     
     # apply transformer - standard scaler
+    X_inference = X_inference.drop(columns=['loan_id'])
     X_inference = X_inference.astype(float)
     transformer_stdscaler = model_artefact["preprocessing_transformers"]["stdscaler"]
     X_inference = transformer_stdscaler.transform(X_inference)
@@ -141,8 +145,10 @@ def main(snapshotdate, modelname):
     print("Total records:", len(y_inference_pdf))
 
     # --- save model inference to datamart gold table ---
-    # create bronze datalake
+    
     gold_directory = f"datamart/gold/model_predictions/{config['model_name'][:-4]}/"
+    
+    
     print(gold_directory)
     
     if not os.path.exists(gold_directory):
@@ -153,7 +159,7 @@ def main(snapshotdate, modelname):
     filepath = gold_directory + partition_name
     spark.createDataFrame(y_inference_pdf).write.mode("overwrite").parquet(filepath)
     # df.toPandas().to_parquet(filepath,
-    #           compression='gzip')
+    #     compression='gzip')
     print('saved to:', filepath)
 
     

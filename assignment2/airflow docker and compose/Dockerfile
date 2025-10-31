@@ -1,5 +1,8 @@
-# Use the official Apache Airflow image (adjust the version as needed)
-FROM apache/airflow:2.6.1
+FROM python:3.12-slim
+
+# Use the Apache Airflow image that bundles Python 3.10 so recent scientific
+# packages (numpy 2.x, pandas 2.2.x, etc.) install cleanly.
+FROM apache/airflow:2.6.1-python3.10
 
 # Switch to root to install additional packages
 USER root
@@ -27,8 +30,19 @@ COPY requirements.txt ./
 # Switch to the airflow user before installing Python dependencies
 USER airflow
 
-# Install Python dependencies using requirements.txt
+# Install Python dependencies (ensure that pyspark is in your requirements.txt,
+# or you can install it explicitly by uncommenting the next line)
 RUN pip install --no-cache-dir -r requirements.txt
+# RUN pip install pyspark
+
+# Expose the default JupyterLab port
+EXPOSE 8888
 
 # Create a volume mount point for notebooks
 VOLUME /app
+
+# Enable JupyterLab via environment variable
+ENV JUPYTER_ENABLE_LAB=yes
+
+# Set up the command to run JupyterLab
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--notebook-dir=/app"]

@@ -2,9 +2,53 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.dummy import DummyOperator
 from airflow.operators.python import BranchPythonOperator
+from airflow.operators.python import ShortCircuitOperator
 from datetime import datetime, timedelta
 import os
 import glob
+
+def check_sufficient_data_for_training(**context):
+    """
+    Check if we have sufficient data for model training.
+
+    DYNAMIC WINDOWS (relative mode):
+      The model config uses relative windows that calculate backwards from snapshot_date.
+      With 12-month training + 2-month validation + 2-month test + 1-month OOT,
+      and the fact that labels is bult at MOB =6, so
+      12 + 2 + 2 + 1 + 6
+      we need 23 months of data. Starting from 2023-01-01, the earliest we can train
+      is when snapshot_date reaches 2024-12-01.
+
+    FIXED WINDOWS (absolute mode):
+      Uses hardcoded dates. Still requires data through 2024-12-01 for OOT period.
+
+    RETRAINING:
+      After initial training, this allows monthly retraining with rolling windows.
+      To control retraining frequency, adjust the DAG schedule or add custom logic here.
+
+    Returns True only if execution_date >= 2024-12-01.
+    """
+    execution_date = context["ds"]  # Format: YYYY-MM-DD
+    min_date_for_training = "2024-12-01"
+
+    should_train = execution_date >= min_date_for_training
+
+    if should_train:
+        print(
+            f"✅ Sufficient data available (execution_date={execution_date}). Proceeding with model training."
+        )
+        print(
+            "   Training will use data from calculated temporal windows based on this snapshot_date."
+        )
+    else:
+        print(
+            f"⏭️  Skipping model training (execution_date={execution_date} < {min_date_for_training}). Insufficient data."
+        )
+        print(
+            "   Need at least 23 months of data (12 train + 2 val + 2 test + 1 OOT + 6 due to MOB=6)."
+        )
+
+    return should_train
 
 default_args = {
     'owner': 'airflow',
@@ -14,9 +58,9 @@ default_args = {
 }
 
 with DAG(
-    'dag',
+    'credit_risk_ml_pipeline',
     default_args=default_args,
-    description='data pipeline run once a month',
+    description='End-to-end ML pipeline for credit risk prediction run once a month',
     schedule_interval='0 0 1 * *',  # At 00:00 on day-of-month 1
     start_date=datetime(2023, 1, 1),
     end_date=datetime(2024, 12, 1),
@@ -141,7 +185,7 @@ with DAG(
     )
     model_inference_completed = DummyOperator(task_id="model_inference_completed")
 
-
+    label_store_completed >> model_inference_start >> model_inference >> model_inference_completed
 
     # --- model monitoring ---
     model_monitor_start = DummyOperator(task_id="model_monitor_start")
@@ -159,10 +203,14 @@ with DAG(
     # Define task dependencies to run scripts sequentially
     model_inference_completed >> model_monitor_start >> model_monitor >> model_monitor_completed
     
-
-    label_store_completed >> model_inference_start >> model_inference >> model_inference_completed
-    
     # --- model auto training ---
+
+    # Check if we have enough data before running model training
+    check_training_data = ShortCircuitOperator(
+        task_id="check_training_data",
+        python_callable=check_sufficient_data_for_training,
+        provide_context=True,
+    )
 
     model_automl_start = DummyOperator(task_id="model_automl_start")
     
@@ -177,6 +225,6 @@ with DAG(
     model_automl_completed = DummyOperator(task_id="model_automl_completed")
     
     # Define task dependencies to run scripts sequentially
-    # Define task dependencies to run scripts sequentially
-    [feature_store_completed, label_store_completed] >> model_inference_start 
-    model_inference_start >> model_inference >> model_inference_completed 
+    feature_store_completed >> check_training_data
+    label_store_completed >> check_training_data
+    check_training_data >> model_automl_start >> model_1_automl >> model_automl_completed

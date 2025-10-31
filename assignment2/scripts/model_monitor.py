@@ -92,7 +92,7 @@ def main(snapshotdate,modelname):
 
     label_df = pd.concat([pd.read_parquet(f) for f in label_files], ignore_index=True)
     label_df['snapshot_date'] = pd.to_datetime(label_df['snapshot_date'])
-       print(f"Labels loaded: {len(label_df)} rows")
+    print(f"Labels loaded: {len(label_df)} rows")
 
     
     # --- Merge predictions with labels ---
