@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pyspark.sql.functions import col
 
+
 def process_bronze_table(
     file_path, snapshot_date_str, output_directory, output_prefix, spark, date_filter_column="snapshot_date"
 ):
