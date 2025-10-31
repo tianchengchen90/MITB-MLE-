@@ -33,7 +33,7 @@ def main(snapshotdate):
         os.makedirs(bronze_financials_directory)
 
     # source data file 
-    csv_file = "../data/features_financials.csv"
+    csv_file = "data/features_financials.csv"
 
     # financials file does not have snapshot_date column, so process once without date filter
     utils.data_processing_bronze_table.process_bronze_table(

@@ -33,7 +33,7 @@ def main(snapshotdate):
         os.makedirs(bronze_attributes_directory)
 
     # source data file (relative to /opt/airflow/scripts/)
-    csv_file = "../data/features_attributes.csv"
+    csv_file = "data/features_attributes.csv"
 
     # attributes file does not have snapshot_date column, so process once without date filter
     utils.data_processing_bronze_table.process_bronze_table(
